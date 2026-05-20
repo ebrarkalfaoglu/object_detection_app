@@ -1,6 +1,7 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_vision/flutter_vision.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 
 class DetectionPage extends StatefulWidget {
   const DetectionPage({super.key});
@@ -11,12 +12,13 @@ class DetectionPage extends StatefulWidget {
 
 class _DetectionPageState extends State<DetectionPage> {
   FlutterVision vision = FlutterVision();
-
+  FlutterTts flutterTts = FlutterTts();
   CameraController? controller;
   List<Map<String, dynamic>> results = [];
 
   bool isLoaded = false;
   bool isDetecting = false;
+  String lastSpoken = "";
 
   @override
   void initState() {
@@ -52,8 +54,17 @@ class _DetectionPageState extends State<DetectionPage> {
       );
 
       print(result);
-      
-      results = result;
+
+      if (result.isNotEmpty) {
+        results = result;
+
+        String detectedObject = results.first["tag"];
+
+        if (detectedObject != lastSpoken) {
+          lastSpoken = detectedObject;
+          await flutterTts.speak(detectedObject);
+        }
+      }
 
       setState(() {});
 
@@ -102,16 +113,61 @@ class _DetectionPageState extends State<DetectionPage> {
         children: [
           CameraPreview(controller!),
 
+          // BOUNDING BOX
+          ...results.map((result) {
+            return Positioned(
+              left: result["box"][0],
+
+              top: result["box"][1],
+
+              width:
+                  result["box"][2] - result["box"][0],
+
+              height:
+                  result["box"][3] - result["box"][1],
+
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: Colors.red,
+                    width: 3,
+                  ),
+                ),
+
+                child: Align(
+                  alignment: Alignment.topLeft,
+                  child: Container(
+                    color: Colors.red,
+                    padding: const EdgeInsets.all(4),
+
+                    child: Text(
+                      "${result["tag"]} "
+                      "${(result["box"][4] * 100).toStringAsFixed(0)}%",
+
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+
           Positioned(
             top: 50,
             left: 20,
             child: Container(
               color: Colors.black54,
               padding: const EdgeInsets.all(8),
+
               child: Text(
                 results.isNotEmpty
                     ? results.first["tag"]
                     : "Algılanmadı",
+
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 22,
