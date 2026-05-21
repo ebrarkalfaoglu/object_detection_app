@@ -39,6 +39,8 @@ dependencies:
   flutter_vision: ^1.1.4
   flutter_tts: ^4.2.5
   image_picker: ^1.2.2
+  speech_to_text: ^7.4.0
+
 
 dev_dependencies:
   flutter_test:

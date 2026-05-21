@@ -4,6 +4,7 @@ import 'package:flutter_vision/flutter_vision.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 
 class DetectionPage extends StatefulWidget {
   const DetectionPage({super.key});
@@ -15,14 +16,17 @@ class DetectionPage extends StatefulWidget {
 class _DetectionPageState extends State<DetectionPage> {
   FlutterVision vision = FlutterVision();
   FlutterTts flutterTts = FlutterTts();
+  SpeechToText speechToText = SpeechToText();
   CameraController? controller;
   List<Map<String, dynamic>> results = [];
 
   bool isLoaded = false;
   bool isDetecting = false;
   bool isPhotoMode = false;
+  bool isListening = false;
   File? selectedImage;
   String lastSpoken = "";
+  
 
   @override
   void initState() {
@@ -34,9 +38,11 @@ class _DetectionPageState extends State<DetectionPage> {
     await loadModel();
 
     await flutterTts.setLanguage("en-US");
-    await flutterTts.setSpeechRate(0.4);
+    await flutterTts.setSpeechRate(0.35);
     await flutterTts.setVolume(1.0);
-    await flutterTts.setPitch(1.0);
+    await flutterTts.setPitch(0.9);
+    await startListening();
+    await flutterTts.awaitSpeakCompletion(true);
 
     final cameras = await availableCameras();
 
@@ -58,8 +64,8 @@ class _DetectionPageState extends State<DetectionPage> {
         imageHeight: image.height,
         imageWidth: image.width,
         iouThreshold: 0.2,
-        confThreshold: 0.1,
-        classThreshold: 0.1,
+        confThreshold: 0.5,
+        classThreshold: 0.5,
       );
 
       print(result);
@@ -73,6 +79,25 @@ class _DetectionPageState extends State<DetectionPage> {
         double x2 = results.first["box"][2];
 
         double centerX = (x1 + x2) / 2;
+        double width = x2 - x1;
+
+        double height =
+    results.first["box"][3] -
+    results.first["box"][1];
+
+        double area = width * height;
+
+        String distance = "";
+
+        if (area > 120000) {
+          distance = "very close";
+        }
+        else if (area > 50000) {
+          distance = "nearby";
+        } 
+        else {
+          distance = "far away";
+        }
 
         String direction = "";
 
@@ -88,7 +113,8 @@ class _DetectionPageState extends State<DetectionPage> {
           direction = "ahead";
         }
 
-      String speech = "$detectedObject $direction";
+      String speech =
+          "$detectedObject $direction and $distance";
 
         if (detectedObject != lastSpoken) {
           lastSpoken = detectedObject;
@@ -118,49 +144,133 @@ class _DetectionPageState extends State<DetectionPage> {
     );
   }
 
-  Future<void> pickImageAndDetect() async {
-  final picker = ImagePicker();
+  Future<void> startListening() async {
+  bool available = await speechToText.initialize();
 
-  final pickedFile = await picker.pickImage(
-    source: ImageSource.camera,
-  );
+  if (available) {
+    setState(() {
+      isListening = true;
+    });
 
-  if (pickedFile == null) return;
+    Future.delayed(
+      const Duration(seconds: 30),
+      () async {
+        await speechToText.stop();
 
-  if (!controller!.value.isStreamingImages) {
-    await controller!.startImageStream((image) async {});
+        setState(() {
+          isListening = false;
+        });
+      },
+);
+
+    speechToText.listen(
+      listenFor: const Duration(seconds: 30),
+
+      onResult: (result) async {
+        String spokenText =
+          result.recognizedWords.toLowerCase();
+
+        print("DUYULAN: $spokenText");
+
+        if (
+          spokenText.contains("take") &&
+          spokenText.contains("photo")
+    ) {
+          print("PHOTO COMMAND DETECTED");
+
+          await takePhotoAndDetect();
+    }
+  },
+);
+  }
+}
+
+  Future<void> takePhotoAndDetect() async {
+
+  if (controller == null ||
+      !controller!.value.isInitialized ||
+      controller!.value.isTakingPicture) {
+    return;
   }
 
-  await controller?.stopImageStream();
-  
-  results = [];
+  try {
 
-  selectedImage = File(pickedFile.path);
-  
-  isPhotoMode = true;
-  final result = await vision.yoloOnImage(
-    bytesList: await selectedImage!.readAsBytes(),
-    imageHeight: 640,
-    imageWidth: 640,
-    iouThreshold: 0.2,
-    confThreshold: 0.1,
-    classThreshold: 0.1,
-  );
+    isPhotoMode = true;
 
-  print(result);
+    // STREAM DURSUN
+    if (controller!.value.isStreamingImages) {
+      await controller!.stopImageStream();
+    }
 
-  if (result.isNotEmpty) {
-    results = result;
+    // FOTO ÇEK
+    final XFile picture =
+        await controller!.takePicture();
 
-    String detectedObject = results.first["tag"];
+    selectedImage = File(picture.path);
 
-    if (detectedObject != lastSpoken) {
-      lastSpoken = detectedObject;
+    results = [];
+
+    // YOLO IMAGE
+    final result = await vision.yoloOnImage(
+      bytesList: await selectedImage!.readAsBytes(),
+
+      imageHeight: 640,
+      imageWidth: 640,
+
+      iouThreshold: 0.2,
+      confThreshold: 0.1,
+      classThreshold: 0.1,
+    );
+
+    print(result);
+
+    if (result.isNotEmpty) {
+
+      results = result;
+
+      String detectedObject = results.first["tag"];
+
       await flutterTts.speak(detectedObject);
     }
+
+    setState(() {});
+
+    // STREAMİ GERİ BAŞLAT
+    controller!.startImageStream((image) async {
+
+      if (isDetecting || isPhotoMode) return;
+
+      isDetecting = true;
+
+      final result = await vision.yoloOnFrame(
+        bytesList:
+            image.planes.map((plane) => plane.bytes).toList(),
+
+        imageHeight: image.height,
+        imageWidth: image.width,
+
+        iouThreshold: 0.2,
+        confThreshold: 0.5,
+        classThreshold: 0.5,
+      );
+
+      if (result.isNotEmpty) {
+        results = result;
+      }
+
+      setState(() {});
+
+      await Future.delayed(
+        const Duration(milliseconds: 300),
+      );
+
+      isDetecting = false;
+    });
+
+  } catch (e) {
+    print("PHOTO ERROR: $e");
   }
 
-  setState(() {});
   isPhotoMode = false;
 }
 
@@ -182,16 +292,14 @@ class _DetectionPageState extends State<DetectionPage> {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("Real-Time Detection"),
-      ),
-
+      backgroundColor: Colors.black,
       floatingActionButton: FloatingActionButton(
-        onPressed: pickImageAndDetect,
+        onPressed: takePhotoAndDetect,
         child: const Icon(Icons.camera_alt),
       ),
 
-      body: Stack(
+      body: SafeArea(
+        child: Stack( 
         children: [
           selectedImage != null
             ? Image.file(
@@ -200,7 +308,16 @@ class _DetectionPageState extends State<DetectionPage> {
               width: double.infinity,
               height: double.infinity,
       )
-    : CameraPreview(controller!),
+    : SizedBox.expand(
+    child: FittedBox(
+      fit: BoxFit.cover,
+      child: SizedBox(
+        width: controller!.value.previewSize!.height,
+        height: controller!.value.previewSize!.width,
+        child: CameraPreview(controller!),
+      ),
+    ),
+  ),
 
           // BOUNDING BOX
           ...results.map((result) {
@@ -218,15 +335,16 @@ class _DetectionPageState extends State<DetectionPage> {
               child: Container(
                 decoration: BoxDecoration(
                   border: Border.all(
-                    color: Colors.red,
+                    color: Colors.cyanAccent,
                     width: 3,
                   ),
+                  borderRadius: BorderRadius.circular(16),
                 ),
 
                 child: Align(
                   alignment: Alignment.topLeft,
                   child: Container(
-                    color: Colors.red,
+                    color: Colors.cyanAccent,
                     padding: const EdgeInsets.all(4),
 
                     child: Text(
@@ -244,28 +362,9 @@ class _DetectionPageState extends State<DetectionPage> {
               ),
             );
           }).toList(),
-
-          Positioned(
-            top: 50,
-            left: 20,
-            child: Container(
-              color: Colors.black54,
-              padding: const EdgeInsets.all(8),
-
-              child: Text(
-                results.isNotEmpty
-                    ? results.first["tag"]
-                    : "Algılanmadı",
-
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 22,
-                ),
-              ),
-            ),
-          ),
         ],
       ),
+      ), 
     );
   }
 }
